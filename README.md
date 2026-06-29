@@ -14,7 +14,7 @@ it's delivered to **Telegram**.
 
 ## Features
 
-- **Web UI** at `http://localhost:5000` — dark theme, mobile friendly, no
+- **Web UI** at `http://localhost:8080` — dark theme, mobile friendly, no
   front-end frameworks (plain HTML/CSS/JS).
   - **Topics:** four built-in topics (New AI models, AI funding & acquisitions,
     Product Hunt AI launches, AI tools & breakthroughs) plus add-your-own.
@@ -28,7 +28,8 @@ it's delivered to **Telegram**.
     Telegram chat ID.
 - **`config.json`** persists all settings.
 - **`briefing.py`** gathers sources, curates with Claude, and sends to Telegram.
-- **`scheduler.py`** runs the briefing daily at your configured time (APScheduler).
+- **Built-in scheduler** — an APScheduler job runs inside the web app process and
+  delivers the briefing daily at your configured time (no separate process).
 - **"Send test briefing"** button to trigger a run on demand.
 
 ---
@@ -68,26 +69,25 @@ EXA_API_KEY=your_exa_key_here        # free key from https://exa.ai
 
 ## Running
 
-### Web UI
+### Web UI + scheduler (one process)
 
 ```bash
 python app.py
 ```
 
-Open **http://localhost:5000**, configure your topics / channels / settings, and
-click **Save settings**. Use **Send test briefing** to deliver one immediately.
+This starts both the web UI and the daily scheduler in a single process. Open
+**http://localhost:8080** (override with `PORT=5050 python app.py`), configure
+your topics / channels / settings, and click **Save settings**. Use **Send test
+briefing** to deliver one immediately.
 
-### Daily scheduler
+The built-in scheduler re-reads `config.json` every minute, so changing the
+delivery time in the UI takes effect without restarting. Set `FLASK_DEBUG=true`
+for local development (auto-reload + debug pages); leave it unset in production.
 
-In a second terminal (with the virtualenv active):
-
-```bash
-python scheduler.py            # runs every day at your configured delivery time
-python scheduler.py --now      # send one briefing now, then keep the daily schedule
-```
-
-The scheduler re-reads `config.json` every minute, so changing the delivery time
-in the UI takes effect without restarting it.
+> **Deploying (e.g. Railway):** the app binds to `$PORT` (default 8080) and runs
+> the scheduler in-process, so a single `python app.py` web service is all you
+> need — no separate worker. Set `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`,
+> `TELEGRAM_CHAT_ID`, and `EXA_API_KEY` as environment variables.
 
 ### One-off run from the CLI
 
@@ -120,9 +120,8 @@ The chosen **duration** controls depth: 30 min is a tight 5–7 story digest,
 
 | File | Purpose |
 | --- | --- |
-| `app.py` | Flask web server + config / run-now API |
+| `app.py` | Flask web server + config / run-now API + in-process daily scheduler |
 | `briefing.py` | Source gathering, Claude curation, Telegram delivery |
-| `scheduler.py` | APScheduler daily runner |
 | `config_store.py` | Shared `config.json` read/write helpers |
 | `config.json` | Saved user settings |
 | `templates/index.html` | Web UI markup |
