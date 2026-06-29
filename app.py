@@ -20,6 +20,21 @@ load_dotenv()
 
 app = Flask(__name__)
 
+
+def _log_env_status():
+    """Log (True/False only, never the values) which required env vars are set.
+
+    Printed to stdout so it shows up in deployment logs (e.g. Railway) regardless
+    of the Flask log level.
+    """
+    print("=== AI Briefing startup: environment check ===", flush=True)
+    for var in ("ANTHROPIC_API_KEY", "EXA_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+        print(f"  {var} set: {bool(os.environ.get(var))}", flush=True)
+    print(f"  TIMEZONE: {os.environ.get('TIMEZONE', 'Asia/Kolkata')}", flush=True)
+
+
+_log_env_status()
+
 # Guards against overlapping manual briefing runs.
 _run_lock = threading.Lock()
 _running = {"active": False}

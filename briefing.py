@@ -1,7 +1,7 @@
 """AI Briefing generator.
 
 Gathers fresh AI news from configured YouTube channels (yt-dlp), Product Hunt's
-AI topic page (via r.jina.ai), and the web (the Exa REST API), hands it to Claude
+daily AI leaderboard (via r.jina.ai), and the web (the Exa REST API), hands it to Claude
 (claude-sonnet-4-6) for curation, and delivers the result to Telegram.
 
 Run directly to generate and send a briefing now:
@@ -11,7 +11,6 @@ Run directly to generate and send a briefing now:
 import calendar
 import os
 import re
-import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -141,24 +140,35 @@ def _video_datetime(data):
 # --------------------------------------------------------------------------- #
 # Product Hunt (curl + r.jina.ai)
 # --------------------------------------------------------------------------- #
-# Product Hunt's daily leaderboard is a Cloudflare-protected JS SPA that r.jina.ai
-# cannot read, so the AI topic page is the reliable, AI-specific source.
-PRODUCT_HUNT_URL = "https://www.producthunt.com/topics/artificial-intelligence"
+def _product_hunt_daily_url():
+    """Today's Product Hunt daily leaderboard URL (non-zero-padded month/day)."""
+    today = datetime.now()
+    return (
+        "https://www.producthunt.com/leaderboard/daily/"
+        f"{today.year}/{today.month}/{today.day}"
+    )
 
 
 def _jina_fetch(target_url):
-    """Fetch a URL as clean text through r.jina.ai (with optional JINA_API_KEY)."""
-    cmd = ["curl", "-s", "-L"]
+    """Fetch a URL as clean text through r.jina.ai (with optional JINA_API_KEY).
+
+    Uses requests (not curl) so it works in minimal containers without curl.
+    """
+    headers = {"User-Agent": "AIBriefingBot/1.0", "Accept": "text/plain"}
     jina_key = os.getenv("JINA_API_KEY")
     if jina_key and jina_key != "your_jina_key_here":
-        cmd += ["-H", f"Authorization: Bearer {jina_key}"]
-    cmd.append(f"https://r.jina.ai/{target_url}")
+        headers["Authorization"] = f"Bearer {jina_key}"
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
-    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        resp = requests.get(
+            f"https://r.jina.ai/{target_url}", headers=headers, timeout=30
+        )
+    except requests.RequestException as exc:
         log(f"  Product Hunt fetch failed: {exc}")
         return ""
-    return (result.stdout or "").strip()
+    if not resp.ok:
+        log(f"  Product Hunt fetch returned {resp.status_code}.")
+        return ""
+    return (resp.text or "").strip()
 
 
 def _looks_blocked(text):
@@ -172,13 +182,41 @@ def _looks_blocked(text):
     )
 
 
-def fetch_product_hunt(max_chars=6000):
-    """Fetch the Product Hunt AI topic page as clean text via r.jina.ai + curl."""
-    text = _jina_fetch(PRODUCT_HUNT_URL)
-    if _looks_blocked(text):
-        log("  Product Hunt returned no usable content.")
-        return ""
-    return text[:max_chars]
+def _leaderboard_has_launches(text):
+    """True only if the leaderboard markdown actually contains ranked launches.
+
+    Today's leaderboard reads "No posts for this date" until end of day (PST), and
+    Product Hunt renders the ranked list with JavaScript, so r.jina.ai usually
+    captures only nav/footer chrome. Trust the page only if it isn't the empty
+    state and has at least one non-footer product link.
+    """
+    if "no posts for this date" in text.lower():
+        return False
+    return bool(re.search(r"producthunt\.com/products/[^)?]+\?ref=(?!footer)", text))
+
+
+def fetch_product_hunt(max_chars=8000):
+    """Fetch today's Product Hunt AI launches.
+
+    Primary: today's daily leaderboard via r.jina.ai. In practice that page is
+    empty until end of day (PST) and renders its launches with JavaScript that
+    r.jina.ai can't read, so we fall back to an Exa search scoped to
+    producthunt.com. (A strict "today" date filter on Exa excludes Product Hunt
+    product pages, so we scope by domain and let the prompt enforce today-only.)
+    """
+    text = _jina_fetch(_product_hunt_daily_url())
+    if not _looks_blocked(text) and _leaderboard_has_launches(text):
+        return text[:max_chars]
+
+    log("  Product Hunt leaderboard empty/blocked; falling back to Exa (producthunt.com).")
+    results = exa_search(
+        "new AI products launched today on Product Hunt",
+        num_results=8,
+        include_domains=["producthunt.com"],
+    )
+    if not results:
+        log("  Product Hunt: no usable content from leaderboard or Exa fallback.")
+    return results
 
 
 # --------------------------------------------------------------------------- #
@@ -187,12 +225,14 @@ def fetch_product_hunt(max_chars=6000):
 EXA_SEARCH_URL = "https://api.exa.ai/search"
 
 
-def exa_search(query, num_results=5, include_domains=None):
+def exa_search(query, num_results=5, include_domains=None, start_published_date=None):
     """Search the web with the Exa REST API.
 
     Reads EXA_API_KEY from the environment. Optionally restrict results to
-    `include_domains` (e.g. ["x.com", "twitter.com"]). Returns a plain-text
-    summary of the results (possibly empty). Get a free key at https://exa.ai.
+    `include_domains` (e.g. ["x.com", "twitter.com"]) and to content published on
+    or after `start_published_date` (ISO 8601, e.g. "2026-06-29T00:00:00.000Z").
+    Returns a plain-text summary of the results (possibly empty). Get a free key
+    at https://exa.ai.
     """
     api_key = os.getenv("EXA_API_KEY")
     if not api_key or api_key == "your_exa_key_here":
@@ -207,6 +247,8 @@ def exa_search(query, num_results=5, include_domains=None):
     }
     if include_domains:
         payload["includeDomains"] = include_domains
+    if start_published_date:
+        payload["startPublishedDate"] = start_published_date
 
     try:
         resp = requests.post(
@@ -419,6 +461,9 @@ about AI. Merge stories that cover the same news across different sources.
 - Group items under the user's chosen topics where it makes sense.
 - Treat official AI-lab blog posts as high-signal, authoritative announcements — \
 surface them prominently when present.
+- For Product Hunt — only include products that launched TODAY. Ignore any \
+promoted, sponsored, or featured products from previous days. If you cannot \
+confirm a product launched today, skip it.
 - Include a Reddit discussions section for genuinely notable community threads \
 (not every post), and weave in Twitter/X chatter where it adds signal.
 - For each item: a short bold headline, 1-2 sentences of what happened and why it \
@@ -631,7 +676,7 @@ def run_briefing(deliver=True):
     reddit_items = fetch_reddit(cfg.get("subreddits", []))
     log(f"  {len(reddit_items)} post(s) across {len(cfg.get('subreddits', []))} subreddit(s).")
 
-    log("Fetching Product Hunt AI topic page...")
+    log("Fetching Product Hunt daily leaderboard...")
     product_hunt = fetch_product_hunt()
 
     log("Running Exa web searches per topic...")
