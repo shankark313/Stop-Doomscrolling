@@ -84,10 +84,16 @@ The built-in scheduler re-reads `config.json` every minute, so changing the
 delivery time in the UI takes effect without restarting. Set `FLASK_DEBUG=true`
 for local development (auto-reload + debug pages); leave it unset in production.
 
+The delivery time is interpreted in the timezone set by the `TIMEZONE` env var
+(IANA name, default `Asia/Kolkata`), independent of the server's own timezone —
+so `08:00` means 8am IST even though Railway runs in UTC. Override it with e.g.
+`TIMEZONE=America/New_York`.
+
 > **Deploying (e.g. Railway):** the app binds to `$PORT` (default 8080) and runs
 > the scheduler in-process, so a single `python app.py` web service is all you
 > need — no separate worker. Set `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`,
-> `TELEGRAM_CHAT_ID`, and `EXA_API_KEY` as environment variables.
+> `TELEGRAM_CHAT_ID`, and `EXA_API_KEY` as environment variables (and optionally
+> `TIMEZONE` if you want something other than IST).
 
 ### One-off run from the CLI
 

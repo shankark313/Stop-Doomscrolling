@@ -74,6 +74,10 @@ def run_now():
 # --------------------------------------------------------------------------- #
 scheduler = BackgroundScheduler()
 JOB_ID = "daily_briefing"
+# Timezone the daily delivery time is interpreted in (IANA name). Defaults to IST
+# so "08:00" means 8am India time regardless of the server's own timezone (Railway
+# runs in UTC). Override with the TIMEZONE env var, e.g. TIMEZONE="America/New_York".
+TIMEZONE = os.environ.get("TIMEZONE", "Asia/Kolkata")
 _scheduler_state = {"started": False, "delivery_time": None}
 
 
@@ -101,12 +105,12 @@ def _ensure_schedule():
 
     scheduler.add_job(
         _run_briefing_job,
-        trigger=CronTrigger(hour=hour, minute=minute),
+        trigger=CronTrigger(hour=hour, minute=minute, timezone=TIMEZONE),
         id=JOB_ID,
         replace_existing=True,
     )
     _scheduler_state["delivery_time"] = delivery_time
-    app.logger.info("Daily briefing scheduled for %s (server time).", delivery_time)
+    app.logger.info("Daily briefing scheduled for %s %s.", delivery_time, TIMEZONE)
 
 
 def start_scheduler():
