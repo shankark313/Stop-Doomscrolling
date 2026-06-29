@@ -1,0 +1,29 @@
+{
+  "selected_topics": [
+    "New AI models",
+    "AI funding & acquisitions",
+    "Product Hunt AI launches",
+    "AI tools & breakthroughs"
+  ],
+  "custom_topics": [],
+  "channels": [
+    {
+      "name": "Mehul",
+      "handle": "@mehulmpt"
+    }
+  ],
+  "subreddits": [
+    "MachineLearning",
+    "LocalLLaMA",
+    "artificial"
+  ],
+  "rss_feeds": [
+    { "name": "OpenAI", "url": "https://openai.com/news/rss.xml" },
+    { "name": "Google DeepMind", "url": "https://deepmind.google/blog/rss.xml" },
+    { "name": "Mistral", "url": "https://mistral.ai/rss.xml" },
+    { "name": "Anthropic (news)", "url": "https://news.google.com/rss/search?q=%22Anthropic%22+AI&hl=en-US&gl=US&ceid=US:en" }
+  ],
+  "duration": "1hr",
+  "delivery_time": "08:00",
+  "telegram_chat_id": "5554982075"
+}
