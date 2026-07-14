@@ -94,6 +94,13 @@ so `08:00` means 8am IST even though Railway runs in UTC. Override it with e.g.
 > need — no separate worker. Set `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`,
 > `TELEGRAM_CHAT_ID`, and `EXA_API_KEY` as environment variables (and optionally
 > `TIMEZONE` if you want something other than IST).
+>
+> **Settings persistence:** Railway's filesystem is ephemeral, so a plain
+> `config.json` loses your settings on every redeploy or restart. Set
+> `SUPABASE_URL` and `SUPABASE_ANON_KEY` (free project at
+> <https://supabase.com>) and run `supabase_schema.sql` once in the Supabase
+> SQL editor — the app then stores settings in the `app_config` table. Without
+> these vars it falls back to `config.json`, which is fine locally only.
 
 ### One-off run from the CLI
 

@@ -28,7 +28,14 @@ def _log_env_status():
     of the Flask log level.
     """
     print("=== AI Briefing startup: environment check ===", flush=True)
-    for var in ("ANTHROPIC_API_KEY", "EXA_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+    for var in (
+        "ANTHROPIC_API_KEY",
+        "EXA_API_KEY",
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_CHAT_ID",
+        "SUPABASE_URL",
+        "SUPABASE_ANON_KEY",
+    ):
         print(f"  {var} set: {bool(os.environ.get(var))}", flush=True)
     print(f"  TIMEZONE: {os.environ.get('TIMEZONE', 'Asia/Kolkata')}", flush=True)
 
@@ -54,7 +61,14 @@ def get_config():
 def update_config():
     payload = request.get_json(silent=True) or {}
     cfg = normalize_config(payload)
-    save_config(cfg)
+    try:
+        save_config(cfg)
+    except Exception as exc:  # noqa: BLE001 - report persistence failures to the UI
+        app.logger.exception("Saving config failed: %s", exc)
+        return (
+            jsonify({"ok": False, "message": f"Could not save settings: {exc}"}),
+            500,
+        )
     return jsonify({"ok": True, "config": cfg})
 
 

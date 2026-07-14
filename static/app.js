@@ -338,7 +338,7 @@ async function saveConfig() {
       state.telegram_chat_id = data.config.telegram_chat_id;
       showToast("Settings saved ✓", "success");
     } else {
-      showToast("Save failed.", "error");
+      showToast(data.message || "Save failed.", "error");
     }
   } catch (err) {
     showToast("Save failed.", "error");

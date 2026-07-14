@@ -1,9 +1,37 @@
-"""Shared helpers for reading and writing the AI Briefing config.json."""
+"""Shared helpers for reading and writing the AI Briefing config.
+
+Persistence backends:
+  - Supabase (production): used when SUPABASE_URL and SUPABASE_ANON_KEY are set.
+    Railway's filesystem is ephemeral, so anything written to disk is lost on
+    every redeploy/restart — the config lives in the `app_config` table instead.
+    See supabase_schema.sql for the one-time table setup.
+  - Local config.json (development fallback): used when the Supabase env vars
+    are absent, and as a read-only fallback if Supabase is unreachable.
+"""
 import json
 import os
+from datetime import datetime, timezone
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+
+SUPABASE_TABLE = "app_config"
+SUPABASE_ROW_ID = "default"
+_supabase_client = None
+
+
+def _supabase():
+    """Return a cached Supabase client, or None if env vars are not set."""
+    global _supabase_client
+    url = os.environ.get("SUPABASE_URL", "").strip()
+    key = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+    if not (url and key):
+        return None
+    if _supabase_client is None:
+        from supabase import create_client
+
+        _supabase_client = create_client(url, key)
+    return _supabase_client
 
 DEFAULT_CONFIG = {
     "selected_topics": [
@@ -37,9 +65,59 @@ DEFAULT_CONFIG = {
 
 
 def load_config():
-    """Load config.json, falling back to defaults for any missing keys."""
+    """Load the config, falling back to defaults for any missing keys.
+
+    Reads from Supabase when configured, otherwise from local config.json.
+    """
+    client = _supabase()
+    if client is not None:
+        try:
+            resp = (
+                client.table(SUPABASE_TABLE)
+                .select("config")
+                .eq("id", SUPABASE_ROW_ID)
+                .limit(1)
+                .execute()
+            )
+            if resp.data:
+                merged = dict(DEFAULT_CONFIG)
+                merged.update(resp.data[0].get("config") or {})
+                return merged
+            # First run against an empty table: seed it with the defaults so
+            # the row exists and later saves are plain upserts.
+            _save_to_supabase(client, DEFAULT_CONFIG)
+            return dict(DEFAULT_CONFIG)
+        except Exception as exc:  # noqa: BLE001 - fall back rather than 500 on reads
+            print(f"Supabase config read failed ({exc}); using local fallback.", flush=True)
+
+    return _load_from_file()
+
+
+def save_config(cfg):
+    """Persist the config dict (Supabase when configured, else config.json)."""
+    client = _supabase()
+    if client is not None:
+        # Let failures propagate: silently falling back to the ephemeral disk
+        # here would reintroduce the "settings vanish on redeploy" bug.
+        _save_to_supabase(client, cfg)
+        return cfg
+    return _save_to_file(cfg)
+
+
+def _save_to_supabase(client, cfg):
+    client.table(SUPABASE_TABLE).upsert(
+        {
+            "id": SUPABASE_ROW_ID,
+            "config": cfg,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    ).execute()
+    return cfg
+
+
+def _load_from_file():
     if not os.path.exists(CONFIG_PATH):
-        save_config(DEFAULT_CONFIG)
+        _save_to_file(DEFAULT_CONFIG)
         return dict(DEFAULT_CONFIG)
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -52,8 +130,7 @@ def load_config():
     return merged
 
 
-def save_config(cfg):
-    """Write the config dict to config.json (pretty-printed)."""
+def _save_to_file(cfg):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
     return cfg
