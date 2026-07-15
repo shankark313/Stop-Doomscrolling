@@ -3,93 +3,94 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#0b0e14" />
+  <meta name="theme-color" content="#000000" />
   <title>AI Briefing</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
 </head>
 <body>
   <main class="container">
     <header class="app-header">
       <div class="logo">🧠</div>
-      <div>
-        <h1>AI Briefing</h1>
-        <p class="subtitle">Your personalized daily AI digest, delivered to Telegram.</p>
-      </div>
+      <h1>AI Briefing</h1>
+      <p class="subtitle">Your personalized daily AI digest, delivered to Telegram.</p>
     </header>
 
     <!-- Topics -->
-    <section class="card">
-      <h2><span class="card-icon">📌</span> Topics</h2>
-      <p class="card-hint">Pick what your briefing should cover, and add your own.</p>
-      <div id="topics-list" class="topics-list"></div>
+    <section class="section">
+      <h2 class="section-label">Topics</h2>
+      <p class="section-hint">Pick what your briefing should cover, and add your own.</p>
+      <div id="topics-list" class="pills"></div>
 
       <div class="add-row">
         <input type="text" id="custom-topic-input" placeholder="Add a custom topic…"
                autocomplete="off" />
-        <button class="btn btn-secondary" id="add-topic-btn" type="button">Add</button>
+        <button class="btn-add" id="add-topic-btn" type="button">Add</button>
       </div>
     </section>
 
     <!-- YouTube Channels -->
-    <section class="card">
-      <h2><span class="card-icon">▶️</span> YouTube Channels</h2>
-      <p class="card-hint">Channels checked for new uploads in the last 48 hours.</p>
-      <ul id="channels-list" class="channels-list"></ul>
+    <section class="section">
+      <h2 class="section-label">YouTube Channels</h2>
+      <p class="section-hint">Channels checked for new uploads in the last 48 hours.</p>
+      <ul id="channels-list" class="tag-list"></ul>
 
-      <div class="add-row add-row-channel">
+      <div class="add-row add-row-pair">
         <input type="text" id="channel-name-input" placeholder="Channel name" autocomplete="off" />
         <input type="text" id="channel-handle-input" placeholder="@handle or URL" autocomplete="off" />
-        <button class="btn btn-secondary" id="add-channel-btn" type="button">Add</button>
+        <button class="btn-add" id="add-channel-btn" type="button">Add</button>
       </div>
     </section>
 
     <!-- Reddit Communities -->
-    <section class="card">
-      <h2><span class="card-icon">👽</span> Reddit Communities</h2>
-      <p class="card-hint">Top posts of the day are pulled from each subreddit.</p>
-      <ul id="subreddits-list" class="channels-list"></ul>
+    <section class="section">
+      <h2 class="section-label">Reddit Communities</h2>
+      <p class="section-hint">Top posts of the day are pulled from each subreddit.</p>
+      <ul id="subreddits-list" class="tag-list"></ul>
 
       <div class="add-row">
         <input type="text" id="subreddit-input" placeholder="subreddit name (without r/)" autocomplete="off" />
-        <button class="btn btn-secondary" id="add-subreddit-btn" type="button">Add</button>
+        <button class="btn-add" id="add-subreddit-btn" type="button">Add</button>
       </div>
     </section>
 
     <!-- AI Lab Blogs (RSS) -->
-    <section class="card">
-      <h2><span class="card-icon">📰</span> AI Lab Blogs (RSS)</h2>
-      <p class="card-hint">Posts from the last 48 hours are included.</p>
-      <ul id="feeds-list" class="channels-list"></ul>
+    <section class="section">
+      <h2 class="section-label">RSS Feeds</h2>
+      <p class="section-hint">Posts from the last 48 hours are included.</p>
+      <ul id="feeds-list" class="tag-list"></ul>
 
-      <div class="add-row add-row-channel">
+      <div class="add-row add-row-pair">
         <input type="text" id="feed-name-input" placeholder="Blog name" autocomplete="off" />
         <input type="text" id="feed-url-input" placeholder="RSS feed URL" autocomplete="off" />
-        <button class="btn btn-secondary" id="add-feed-btn" type="button">Add</button>
+        <button class="btn-add" id="add-feed-btn" type="button">Add</button>
       </div>
     </section>
 
     <!-- Settings -->
-    <section class="card">
-      <h2><span class="card-icon">⚙️</span> Settings</h2>
+    <section class="section">
+      <h2 class="section-label">Settings</h2>
 
       <div class="field">
-        <label for="duration-select">Daily duration</label>
-        <select id="duration-select">
-          <option value="30min">30 minutes — concise</option>
-          <option value="1hr">1 hour — focused</option>
-          <option value="2hr">2 hours — in-depth</option>
-        </select>
+        <span class="field-label">Daily duration</span>
+        <div class="segment" id="duration-segment" role="group" aria-label="Daily duration">
+          <button type="button" class="segment-btn" data-value="30min">30 min</button>
+          <button type="button" class="segment-btn" data-value="1hr">1 hour</button>
+          <button type="button" class="segment-btn" data-value="2hr">2 hours</button>
+        </div>
         <span class="field-hint">Controls how many stories and how much detail.</span>
       </div>
 
       <div class="field">
-        <label for="delivery-time">Delivery time</label>
+        <label class="field-label" for="delivery-time">Delivery time</label>
         <input type="time" id="delivery-time" />
         <span class="field-hint">When the scheduler sends your briefing each day.</span>
       </div>
 
       <div class="field">
-        <label for="chat-id">Telegram chat ID</label>
+        <label class="field-label" for="chat-id">Telegram chat ID</label>
         <input type="text" id="chat-id" placeholder="e.g. 5554982075" autocomplete="off" />
         <span class="field-hint">Where the briefing is delivered.</span>
       </div>
@@ -97,7 +98,7 @@
 
     <div class="actions">
       <button class="btn btn-primary" id="save-btn" type="button">Save settings</button>
-      <button class="btn btn-ghost" id="run-now-btn" type="button">Send test briefing</button>
+      <button class="btn btn-outline" id="run-now-btn" type="button">Send test briefing</button>
     </div>
 
     <footer class="app-footer">

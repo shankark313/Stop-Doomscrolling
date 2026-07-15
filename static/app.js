@@ -29,7 +29,7 @@ function showToast(message, kind = "") {
   clearTimeout(showToast._t);
   showToast._t = setTimeout(() => {
     toast.className = "toast";
-  }, 3200);
+  }, 3000);
 }
 
 function escapeHtml(str) {
@@ -51,40 +51,34 @@ function renderTopics() {
 
   allTopics.forEach((topic) => {
     const isCustom = !PREDEFINED_TOPICS.includes(topic);
-    const item = document.createElement("div");
-    item.className = "topic-item";
+    const isOn = selected.has(topic);
 
-    const label = document.createElement("label");
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = selected.has(topic);
-    checkbox.addEventListener("change", () => toggleTopic(topic, checkbox.checked));
+    const wrap = document.createElement("div");
+    wrap.className = "pill-wrap" + (isCustom ? " custom" : "");
 
-    const text = document.createElement("span");
-    text.textContent = topic;
-    label.appendChild(checkbox);
-    label.appendChild(text);
-
-    if (isCustom) {
-      const tag = document.createElement("span");
-      tag.className = "tag-custom";
-      tag.textContent = "custom";
-      label.appendChild(tag);
-    }
-
-    item.appendChild(label);
+    const pill = document.createElement("button");
+    pill.type = "button";
+    pill.className = "pill" + (isOn ? " on" : "");
+    pill.setAttribute("aria-pressed", String(isOn));
+    pill.textContent = topic;
+    pill.addEventListener("click", () => {
+      toggleTopic(topic, !state.selected_topics.includes(topic));
+      renderTopics();
+    });
+    wrap.appendChild(pill);
 
     if (isCustom) {
       const remove = document.createElement("button");
-      remove.className = "icon-btn";
+      remove.className = "pill-x";
       remove.type = "button";
       remove.title = "Remove topic";
+      remove.setAttribute("aria-label", `Remove topic ${topic}`);
       remove.innerHTML = "&times;";
       remove.addEventListener("click", () => removeCustomTopic(topic));
-      item.appendChild(remove);
+      wrap.appendChild(remove);
     }
 
-    list.appendChild(item);
+    list.appendChild(wrap);
   });
 }
 
@@ -102,18 +96,19 @@ function renderChannels() {
 
   state.channels.forEach((ch, index) => {
     const item = document.createElement("li");
-    item.className = "channel-item";
+    item.className = "tag-item";
 
     const meta = document.createElement("div");
-    meta.className = "channel-meta";
+    meta.className = "tag-meta";
     meta.innerHTML =
-      `<div class="channel-name">${escapeHtml(ch.name || ch.handle)}</div>` +
-      (ch.handle ? `<div class="channel-handle">${escapeHtml(ch.handle)}</div>` : "");
+      `<span class="tag-name">${escapeHtml(ch.name || ch.handle)}</span>` +
+      (ch.handle ? `<span class="tag-detail">${escapeHtml(ch.handle)}</span>` : "");
 
     const remove = document.createElement("button");
-    remove.className = "icon-btn";
+    remove.className = "tag-remove";
     remove.type = "button";
     remove.title = "Remove channel";
+    remove.setAttribute("aria-label", `Remove channel ${ch.name || ch.handle}`);
     remove.innerHTML = "&times;";
     remove.addEventListener("click", () => {
       state.channels.splice(index, 1);
@@ -127,9 +122,17 @@ function renderChannels() {
 }
 
 function renderSettings() {
-  $("duration-select").value = state.duration;
+  renderDuration();
   $("delivery-time").value = state.delivery_time;
   $("chat-id").value = state.telegram_chat_id;
+}
+
+function renderDuration() {
+  document.querySelectorAll("#duration-segment .segment-btn").forEach((btn) => {
+    const on = btn.dataset.value === state.duration;
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-pressed", String(on));
+  });
 }
 
 // ---- Mutations ----------------------------------------------------------- //
@@ -193,16 +196,17 @@ function renderSubreddits() {
 
   state.subreddits.forEach((sub, index) => {
     const item = document.createElement("li");
-    item.className = "channel-item";
+    item.className = "tag-item";
 
     const meta = document.createElement("div");
-    meta.className = "channel-meta";
-    meta.innerHTML = `<div class="channel-name">r/${escapeHtml(sub)}</div>`;
+    meta.className = "tag-meta";
+    meta.innerHTML = `<span class="tag-name">r/${escapeHtml(sub)}</span>`;
 
     const remove = document.createElement("button");
-    remove.className = "icon-btn";
+    remove.className = "tag-remove";
     remove.type = "button";
     remove.title = "Remove community";
+    remove.setAttribute("aria-label", `Remove community r/${sub}`);
     remove.innerHTML = "&times;";
     remove.addEventListener("click", () => {
       state.subreddits.splice(index, 1);
@@ -244,18 +248,19 @@ function renderFeeds() {
 
   state.rss_feeds.forEach((feed, index) => {
     const item = document.createElement("li");
-    item.className = "channel-item";
+    item.className = "tag-item";
 
     const meta = document.createElement("div");
-    meta.className = "channel-meta";
+    meta.className = "tag-meta";
     meta.innerHTML =
-      `<div class="channel-name">${escapeHtml(feed.name || feed.url)}</div>` +
-      (feed.url ? `<div class="channel-handle">${escapeHtml(feed.url)}</div>` : "");
+      `<span class="tag-name">${escapeHtml(feed.name || feed.url)}</span>` +
+      (feed.url ? `<span class="tag-detail">${escapeHtml(feed.url)}</span>` : "");
 
     const remove = document.createElement("button");
-    remove.className = "icon-btn";
+    remove.className = "tag-remove";
     remove.type = "button";
     remove.title = "Remove blog";
+    remove.setAttribute("aria-label", `Remove blog ${feed.name || feed.url}`);
     remove.innerHTML = "&times;";
     remove.addEventListener("click", () => {
       state.rss_feeds.splice(index, 1);
@@ -316,7 +321,7 @@ function collectState() {
     channels: state.channels,
     subreddits: state.subreddits,
     rss_feeds: state.rss_feeds,
-    duration: $("duration-select").value,
+    duration: state.duration,
     delivery_time: $("delivery-time").value || "08:00",
     telegram_chat_id: $("chat-id").value.trim(),
   };
@@ -402,6 +407,13 @@ function init() {
       e.preventDefault();
       addFeed();
     }
+  });
+
+  document.querySelectorAll("#duration-segment .segment-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.duration = btn.dataset.value;
+      renderDuration();
+    });
   });
 
   $("save-btn").addEventListener("click", saveConfig);
