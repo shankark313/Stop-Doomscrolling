@@ -15,6 +15,8 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import requests
 from dotenv import load_dotenv
 
@@ -60,6 +62,58 @@ def _channel_videos_url(channel):
     return f"https://www.youtube.com/{handle}/videos"
 
 
+def _ytdlp_base_opts():
+    """Base yt-dlp options, including any bot-check workarounds from the env.
+
+    YouTube serves a "Sign in to confirm you're not a bot" interstitial to
+    datacenter IPs, which is why channel checks succeed on a laptop and return
+    nothing from Railway. Two env vars work around it:
+      YTDLP_COOKIES  — contents of a Netscape-format cookies.txt export of a
+                       logged-in YouTube session (written to a temp file here).
+      YTDLP_PROXY    — an http(s)/socks proxy on a residential IP.
+    Neither is required; without them we simply use the default client.
+    """
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "ignoreerrors": True,
+        # The android/web_embedded clients are less aggressively bot-checked
+        # than the default web client.
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+    }
+    proxy = (os.getenv("YTDLP_PROXY") or "").strip()
+    if proxy:
+        opts["proxy"] = proxy
+    cookie_file = _ytdlp_cookie_file()
+    if cookie_file:
+        opts["cookiefile"] = cookie_file
+    return opts
+
+
+_COOKIE_PATH = None
+
+
+def _ytdlp_cookie_file():
+    """Materialise YTDLP_COOKIES into a temp file once per process, if set."""
+    global _COOKIE_PATH
+    if _COOKIE_PATH is not None:
+        return _COOKIE_PATH or None
+    raw = os.getenv("YTDLP_COOKIES") or ""
+    if not raw.strip():
+        _COOKIE_PATH = ""
+        return None
+    import tempfile
+
+    handle = tempfile.NamedTemporaryFile(
+        "w", suffix=".txt", delete=False, encoding="utf-8"
+    )
+    handle.write(raw.replace("\\n", "\n"))
+    handle.close()
+    _COOKIE_PATH = handle.name
+    return _COOKIE_PATH
+
+
 def get_recent_videos(channel, hours=48, max_check=6):
     """Return videos uploaded to a channel within the last `hours`."""
     import yt_dlp  # imported lazily so the web UI starts fast
@@ -71,15 +125,13 @@ def get_recent_videos(channel, hours=48, max_check=6):
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     results = []
+    failures = []
 
     try:
         flat_opts = {
+            **_ytdlp_base_opts(),
             "extract_flat": "in_playlist",
             "playlistend": max_check,
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "ignoreerrors": True,
         }
         with yt_dlp.YoutubeDL(flat_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -88,13 +140,11 @@ def get_recent_videos(channel, hours=48, max_check=6):
         log(f"  yt-dlp could not list videos for {name}: {exc}")
         return []
 
-    full_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "ignoreerrors": True,
-    }
-    with yt_dlp.YoutubeDL(full_opts) as ydl:
+    if not entries:
+        log(f"  yt-dlp listed 0 videos for {name} (bot check or empty channel?).")
+        return []
+
+    with yt_dlp.YoutubeDL(_ytdlp_base_opts()) as ydl:
         for entry in entries[:max_check]:
             vid = entry.get("id") or entry.get("url")
             if not vid:
@@ -105,9 +155,11 @@ def get_recent_videos(channel, hours=48, max_check=6):
             )
             try:
                 data = ydl.extract_info(watch, download=False)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                failures.append(str(exc).split("\n")[0][:160])
                 continue
             if not data:
+                failures.append("extractor returned no data")
                 continue
 
             uploaded = _video_datetime(data)
@@ -121,6 +173,8 @@ def get_recent_videos(channel, hours=48, max_check=6):
                         "description": (data.get("description") or "")[:400],
                     }
                 )
+    if failures and not results:
+        log(f"  yt-dlp failed on all {len(failures)} video(s) for {name}: {failures[0]}")
     return results
 
 
@@ -280,6 +334,100 @@ def exa_search(query, num_results=5, include_domains=None, start_published_date=
 
 
 # --------------------------------------------------------------------------- #
+# Serper (Google search / news via serper.dev)
+# --------------------------------------------------------------------------- #
+SERPER_URL = "https://google.serper.dev"
+
+# Google's `tbs` recency filter. Serper passes it straight through.
+SERPER_WINDOWS = {"day": "qdr:d", "week": "qdr:w", "month": "qdr:m"}
+
+
+def serper_search(query, kind="search", num=10, window=None, country=None, lang="en"):
+    """Search Google through serper.dev. Returns a plain-text summary (may be empty).
+
+    `kind` is "search" (organic web results — use a `site:` operator to scope to
+    one domain) or "news" (Google News, which carries a relative date per item
+    and is the better source when earliness matters). `window` is one of
+    SERPER_WINDOWS and restricts results to the last day/week/month; `country`
+    is a two-letter code (e.g. "in") that geo-scopes the query.
+
+    Complements exa_search rather than replacing it: Exa does semantic retrieval
+    and returns page text, while Serper reaches Google's index — which is the
+    only way to see sites Exa can't crawl (reddit.com, x.com) and the only
+    source of a reliable 24-hour freshness filter.
+    """
+    api_key = os.getenv("SERPER_API_KEY")
+    if not api_key or api_key == "your_serper_key_here":
+        log("  SERPER_API_KEY not set — skipping Google search. Get a key at https://serper.dev")
+        return ""
+
+    payload = {"q": query, "num": num, "hl": lang}
+    if window:
+        payload["tbs"] = SERPER_WINDOWS.get(window, window)
+    if country:
+        payload["gl"] = country
+
+    try:
+        resp = requests.post(
+            f"{SERPER_URL}/{kind}",
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            json=payload,
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        log(f"  Serper {kind} failed: {exc}")
+        return ""
+
+    if not resp.ok:
+        log(f"  Serper {kind} returned {resp.status_code}: {resp.text[:200]}")
+        return ""
+
+    results = resp.json().get("news" if kind == "news" else "organic", [])
+    if not results:
+        log(f"  Serper returned no results for: {query[:60]}")
+        return ""
+
+    lines = []
+    for res in results:
+        title = res.get("title") or "(untitled)"
+        link = res.get("link") or ""
+        # "date" is relative on news ("3 hours ago") and usually absent on organic.
+        date = res.get("date")
+        snippet = (res.get("snippet") or "").strip().replace("\n", " ")[:300]
+        source = res.get("source")
+        meta = " · ".join(p for p in (source, date) if p)
+        lines.append(f"- {title} ({link})\n  {meta}\n  {snippet}" if meta
+                     else f"- {title} ({link})\n  {snippet}")
+    return "\n".join(lines)
+
+
+def search_topic(topic, days=3):
+    """Gather fresh results for one configured topic from both search backends.
+
+    Exa does semantic retrieval and returns page text; Serper's Google News lane
+    carries a real per-item date and a hard 24-hour freshness filter. Running
+    both is what keeps the long-tail topics (the ones phrased as themes rather
+    than keywords) from coming back empty.
+    """
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+        "%Y-%m-%dT%H:%M:%S.000Z"
+    )
+    sections = []
+
+    semantic = exa_search(
+        f"latest AI news about {topic}", num_results=5, start_published_date=since
+    )
+    if semantic:
+        sections.append(semantic)
+
+    news = serper_search(f"AI {topic}", kind="news", num=6, window="day")
+    if news:
+        sections.append(news)
+
+    return "\n".join(sections)
+
+
+# --------------------------------------------------------------------------- #
 # Reddit (top posts of the day)
 # --------------------------------------------------------------------------- #
 # A realistic browser UA — Reddit's RSS endpoint rejects generic bot agents.
@@ -296,25 +444,79 @@ def _clean_subreddit(sub):
     return name.strip().strip("/")
 
 
-def fetch_reddit(subreddits, limit=5):
+def fetch_reddit(subreddits, limit=5, delay=1):
     """Fetch the top posts of the day from each subreddit. Fails gracefully per sub.
 
-    Tries Reddit's JSON API first (it includes each post's score). Reddit blocks
-    that endpoint from many datacenter IPs with a 403, so on failure we fall back
-    to the subreddit's RSS feed, which is far more permissive (but carries no score).
+    Reddit itself is effectively unreachable from a server: the JSON API answers
+    403 to non-OAuth clients, and the RSS feed starts answering 429 after roughly
+    two subreddits — a cumulative per-IP limit that a longer `delay` does not
+    avoid. So when a Serper key is present we read Reddit through Google's index
+    instead, which is not rate-limited per subreddit and returns the same threads.
+
+    Reddit's own endpoints (JSON, then RSS) remain the fallback for when Serper
+    is unconfigured or a query comes back empty.
     """
     items = []
     for index, sub in enumerate(subreddits):
         name = _clean_subreddit(sub)
         if not name:
             continue
-        if index > 0:
-            time.sleep(1)  # be polite to Reddit; avoids 429 rate-limiting
-        posts = _fetch_reddit_json(name, limit)
+        posts = _fetch_reddit_serper(name, limit)
         if posts is None:
-            posts = _fetch_reddit_rss(name, limit)
+            if index > 0:
+                time.sleep(delay)  # be polite to Reddit; avoids 429 rate-limiting
+            posts = _fetch_reddit_json(name, limit)
+            if posts is None:
+                posts = _fetch_reddit_rss(name, limit)
+        if not posts:
+            log(f"  Reddit r/{name}: no posts retrieved.")
         items.extend(posts)
     return items
+
+
+def _fetch_reddit_serper(name, limit):
+    """Return today's posts for a subreddit via Google (serper.dev).
+
+    Returns None when Serper is unusable (no key, error, or no results) so the
+    caller can fall through to Reddit's own endpoints.
+    """
+    api_key = os.getenv("SERPER_API_KEY")
+    if not api_key or api_key == "your_serper_key_here":
+        return None
+
+    payload = {"q": f"site:reddit.com/r/{name}", "num": max(limit * 2, 10), "tbs": "qdr:d"}
+    try:
+        resp = requests.post(
+            f"{SERPER_URL}/search",
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            json=payload,
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        log(f"  Reddit r/{name} via Serper failed: {exc}; trying Reddit directly.")
+        return None
+    if not resp.ok:
+        log(f"  Reddit r/{name} via Serper returned {resp.status_code}; trying Reddit directly.")
+        return None
+
+    posts = []
+    for res in resp.json().get("organic", []):
+        link = res.get("link") or ""
+        # Skip subreddit landing pages and other-subreddit bleed-through.
+        if f"/r/{name.lower()}/comments/" not in link.lower():
+            continue
+        posts.append(
+            {
+                "subreddit": name,
+                "title": res.get("title"),
+                "url": link,
+                "score": None,
+                "selftext": (res.get("snippet") or "").strip()[:300],
+            }
+        )
+        if len(posts) >= limit:
+            break
+    return posts or None
 
 
 def _fetch_reddit_json(name, limit):
@@ -661,12 +863,22 @@ def run_briefing(deliver=True):
     cfg = load_config()
     log("Starting briefing run.")
 
-    log("Checking YouTube channels for new videos...")
+    channels = cfg.get("channels", [])
+    log(f"Checking {len(channels)} YouTube channel(s) for new videos...")
     videos = []
-    for channel in cfg.get("channels", []):
-        found = get_recent_videos(channel)
-        log(f"  {channel.get('name', channel.get('handle'))}: {len(found)} recent video(s).")
-        videos.extend(found)
+    # Each channel costs ~10s of mostly-network time; run them concurrently so a
+    # long channel list doesn't stretch the run into minutes.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(get_recent_videos, ch): ch for ch in channels}
+        for future in as_completed(futures):
+            ch = futures[future]
+            try:
+                found = future.result()
+            except Exception as exc:  # noqa: BLE001 - one bad channel must not kill the run
+                log(f"  {ch.get('name', ch.get('handle'))}: failed ({exc}).")
+                continue
+            log(f"  {ch.get('name', ch.get('handle'))}: {len(found)} recent video(s).")
+            videos.extend(found)
 
     log("Fetching AI lab blog feeds (RSS)...")
     rss_items = fetch_rss_feeds(cfg.get("rss_feeds", []))
@@ -679,13 +891,21 @@ def run_briefing(deliver=True):
     log("Fetching Product Hunt daily leaderboard...")
     product_hunt = fetch_product_hunt()
 
-    log("Running Exa web searches per topic...")
+    topics = cfg.get("selected_topics", [])
+    log(f"Running web searches for {len(topics)} topic(s)...")
     exa_results = {}
-    for topic in cfg.get("selected_topics", []):
-        exa_results[topic] = exa_search(
-            f"latest AI news about {topic} in the past 48 hours"
-        )
-        log(f"  Searched: {topic}")
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {pool.submit(search_topic, topic): topic for topic in topics}
+        for future in as_completed(futures):
+            topic = futures[future]
+            try:
+                exa_results[topic] = future.result()
+            except Exception as exc:  # noqa: BLE001
+                log(f"  Search failed for {topic}: {exc}")
+                exa_results[topic] = ""
+    empty = [t for t in topics if not exa_results.get(t)]
+    if empty:
+        log(f"  {len(empty)} topic(s) returned nothing: {', '.join(empty[:5])}")
 
     # Twitter/X coverage runs automatically as a regular Exa web search (no UI).
     # (Exa can't index x.com/twitter.com directly, so this is a topical query that
@@ -694,6 +914,21 @@ def run_briefing(deliver=True):
     exa_results["Twitter / X buzz"] = exa_search(
         "what AI researchers and builders are discussing and posting about on "
         "Twitter / X this week"
+    )
+
+    # One-line health check per source, so a silently-empty lane is obvious in
+    # the deployment logs instead of only showing up as a missing section.
+    log(
+        "SOURCE HEALTH — youtube: {}/{} channels, {} video(s) | rss: {} post(s) | "
+        "reddit: {}/{} subs, {} post(s) | producthunt: {} chars | topics: {}/{} "
+        "with results".format(
+            len({v["channel"] for v in videos}), len(channels), len(videos),
+            len(rss_items),
+            len({r["subreddit"] for r in reddit_items}), len(cfg.get("subreddits", [])),
+            len(reddit_items),
+            len(product_hunt or ""),
+            len(topics) - len(empty), len(topics),
+        )
     )
 
     source_material = assemble_source_material(
