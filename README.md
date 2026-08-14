@@ -91,9 +91,18 @@ so `08:00` means 8am IST even though Railway runs in UTC. Override it with e.g.
 
 > **Deploying (e.g. Railway):** the app binds to `$PORT` (default 8080) and runs
 > the scheduler in-process, so a single `python app.py` web service is all you
-> need — no separate worker. Set `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`,
-> `TELEGRAM_CHAT_ID`, and `EXA_API_KEY` as environment variables (and optionally
-> `TIMEZONE` if you want something other than IST).
+> need — no separate worker.
+>
+> **Required:** `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`,
+> `EXA_API_KEY`, and `SERPER_API_KEY` (Reddit does not work without it).
+> **Recommended:** `YTDLP_COOKIES_B64` (YouTube does not work from a datacenter
+> IP without it), `SUPABASE_URL` + `SUPABASE_ANON_KEY` (settings persistence),
+> and `TIMEZONE` if you want something other than IST.
+>
+> On Railway these go in Project Settings → Shared Variables → Production. A
+> shared variable does nothing until you click **SHARE** and link it to the
+> service — an unlinked variable is invisible to the app and looks exactly like
+> a broken source.
 >
 > **Settings persistence:** Railway's filesystem is ephemeral, so a plain
 > `config.json` loses your settings on every redeploy or restart. Set
@@ -115,17 +124,38 @@ python briefing.py --no-send   # generate and print, but don't send to Telegram
 
 ```
 config.json ──► briefing.py
-                  ├─ yt-dlp        → new videos (last 48h) from your channels
-                  ├─ feedparser    → AI lab blog posts (last 48h) from RSS feeds
-                  ├─ reddit         → top posts of the day per subreddit
-                  ├─ curl + jina   → Product Hunt AI topic page as clean text
-                  ├─ Exa REST API  → web search per topic + Twitter/X buzz
-                  ├─ Claude        → curate + format (claude-sonnet-4-6)
-                  └─ Telegram      → deliver the briefing
+                  ├─ yt-dlp          → new videos (last 48h) from your channels
+                  ├─ feedparser      → AI lab blog posts (last 48h) from RSS feeds
+                  ├─ Serper (Google) → top posts of the day per subreddit
+                  ├─ requests + jina → Product Hunt daily leaderboard as clean text
+                  ├─ Exa + Serper    → web search per topic + Twitter/X buzz
+                  ├─ Claude          → curate + format (claude-sonnet-4-6)
+                  └─ Telegram        → deliver the briefing
 ```
 
-The chosen **duration** controls depth: 30 min is a tight 5–7 story digest,
-1 hr is ~8–10 focused stories, and 2 hr is an in-depth 12–15 story read.
+Channel checks and topic searches run concurrently, so adding channels or topics
+costs far less wall-clock time than it used to. A full 9-channel / 25-topic run
+takes roughly 2 minutes of gathering plus 1–3 minutes of Claude curation.
+
+The chosen **duration** controls *depth per story*, not how many stories you get:
+30 min leads with 5–7 stories, 1 hr with ~8–10, 2 hr with 12–15. Breadth is driven
+by your **topic count** instead — every topic with usable material produces at
+least one item, so a 25-topic config yields a much longer briefing than a 5-topic
+one at the same duration setting. This is deliberate: a fixed story count silently
+dropped most of a large topic list.
+
+### Source health
+
+Every run prints a one-line summary of what each source actually returned:
+
+```
+SOURCE HEALTH — youtube: 8/9 channels, 10 video(s) | rss: 39 post(s) |
+reddit: 13/13 subs, 61 post(s) | producthunt: 3188 chars | topics: 25/25 with results
+```
+
+This is the fastest way to spot a silently-broken source. A lane reading `0`
+means that source failed, not that there was no news — see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ---
 
@@ -135,7 +165,8 @@ The chosen **duration** controls depth: 30 min is a tight 5–7 story digest,
 | --- | --- |
 | `app.py` | Flask web server + config / run-now API + in-process daily scheduler |
 | `briefing.py` | Source gathering, Claude curation, Telegram delivery |
-| `config_store.py` | Shared `config.json` read/write helpers |
+| `config_store.py` | Shared config read/write helpers (Supabase or `config.json`) |
+| `TROUBLESHOOTING.md` | Why a source went empty, and the YouTube cookie refresh runbook |
 | `config.json` | Saved user settings |
 | `templates/index.html` | Web UI markup |
 | `static/style.css` | Dark theme styling |
@@ -152,11 +183,107 @@ The chosen **duration** controls depth: 30 min is a tight 5–7 story digest,
   fails to parse, it's re-sent as plain text so delivery never silently fails.
 - YouTube date filtering does a bounded check of each channel's most recent
   uploads, so a daily run stays quick.
-- **Reddit:** the app uses Reddit's JSON API (which includes each post's score).
-  Reddit blocks that endpoint from many datacenter/server IPs with a 403, so the
-  app automatically falls back to the subreddit's RSS feed (works everywhere, but
-  has no score). On a home/residential connection the JSON API usually works.
+- **Reddit needs `SERPER_API_KEY`.** Reddit is effectively unreachable from a
+  server: its JSON API answers 403 to non-OAuth clients, and its RSS feed starts
+  answering 429 after roughly two subreddits — a cumulative per-IP limit that no
+  amount of delay avoids. The app therefore reads Reddit through Google's index
+  via serper.dev, which is not rate-limited per subreddit. Reddit's own endpoints
+  (JSON, then RSS) remain the fallback when Serper is unconfigured. **Without
+  this key the Reddit section will be nearly empty in production.**
+- **YouTube needs cookies when deployed.** YouTube serves a "Sign in to confirm
+  you're not a bot" interstitial to datacenter IPs, so yt-dlp returns zero videos
+  from Railway even though the same channels work fine from a laptop. Set
+  `YTDLP_COOKIES_B64` (or `YTDLP_PROXY`) — see
+  [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the export procedure. **These
+  cookies expire every few weeks and must be refreshed.**
+- **Topic searches use both backends.** Exa does semantic retrieval with a 3-day
+  freshness window; Serper's Google News lane adds a hard 24-hour filter and a
+  real per-item date. Running both is what keeps theme-phrased topics (e.g.
+  "Companies that tried AI and quietly stopped") from coming back empty.
 - **AI Lab Blogs:** Anthropic does not publish an official RSS feed, so the
   pre-filled "Anthropic (news)" entry is a Google News search feed — remove or
   replace it from the UI any time. Twitter/X is covered automatically as an Exa
   web-search query (no UI), since Exa can't crawl x.com directly.
+
+---
+
+# 📡 Content Radar (second lane)
+
+`radar.py` is a **separate lane** that shares this project's collectors,
+credentials, and Telegram delivery. The two answer different questions:
+
+| | `briefing.py` | `radar.py` |
+| --- | --- | --- |
+| Question | "what happened in AI today?" | "what should I film today, and can I be early?" |
+| Sources | `config.json` — labs, model news, r/MachineLearning | `radar_config.json` — consumer apps, parenting/eldercare, India |
+| Search | Exa + Jina | Exa + Jina + **Serper** (Google News 24h, `site:reddit.com`) |
+| Model | `claude-sonnet-4-6` | `claude-opus-5`, adaptive thinking, structured JSON output |
+| Output | a briefing to read | shoot-ready candidates: hook, the 30-second demo, pillar, format |
+| Schedule | 08:00, in-process APScheduler | 07:00, local `launchd` job |
+
+Each candidate is scored 1–5 on **everyday**, **beyond-the-demo**, **India
+angle**, and **earliness**, and must clear `beyond-the-demo >= 4` and
+`everyday >= 4` — otherwise it lands in `rejected` with a reason, however big
+the story. Returning zero candidates on a slow day is a valid result.
+
+```bash
+python radar.py             # run, ping Telegram, write the brief
+python radar.py --no-send   # generate and print, don't touch Telegram
+python radar.py --dry-run   # gather sources only, skip Claude (free)
+```
+
+## Output
+
+Two places. Telegram is the notification; the **markdown brief is the working
+artifact**:
+
+```
+~/Desktop/shankar-brand/content/RADAR-YYYY-MM-DD.md
+```
+
+Override the folder with `RADAR_OUTPUT_DIR`. If it doesn't exist the write is
+skipped with a log line and the run still delivers to Telegram — **which is why
+the radar runs locally, not on Railway**: a cloud filesystem has nowhere to put
+the file.
+
+## Not repeating itself
+
+- `radar_seen.json` — every topic the radar has surfaced (last 200), written after each run.
+- `content_tracker.csv` in the brand repo — read fresh each run, so anything already shot or queued is off the table.
+
+Both lists go into the prompt as "do not propose anything similar", with an
+exact-slug filter after the response as a backstop.
+
+## Scheduling (local, launchd)
+
+```bash
+cp com.shankar.contentradar.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.shankar.contentradar.plist
+launchctl start com.shankar.contentradar     # run once now to test
+tail -f radar.log
+```
+
+## Source notes
+
+- **Serper (`serper.dev`)** reaches Google's index and does two jobs nothing
+  else here can. **Google News with a 24-hour filter** is the earliness engine —
+  the only source with a real per-item timestamp, so "this broke four hours ago"
+  is visible. **`site:reddit.com` search** is the Reddit workaround: it reaches
+  every sub at once, including ones not in `subreddits` (r/eldercare, r/nri and
+  r/daddit have all produced candidates), and Google isn't rate-limiting us.
+  ⚠️ The key currently in `.env` is shared with Genopty — mint a separate one at
+  <https://serper.dev> if you want the quota split.
+- **Reddit direct** is the weak collector but worth keeping for full post text.
+  The `.json` API 403s for unauthenticated clients regardless of User-Agent, and
+  the RSS feed 429s after the first request or two from a home IP (Jina Reader
+  is blocked outright). The radar reads a **rotating window** of
+  `subreddits_per_run` subs per day (default 2). Expect 1–2 subs per run; the
+  Serper pass above is what actually carries Reddit coverage.
+- **Exa** does semantic retrieval and returns page text: five everyday-framed
+  queries per run, filtered to the last `freshness_hours` (default 48). It
+  cannot crawl reddit.com or x.com — that's why Serper is there.
+- **Product Hunt** is the earliest signal on new consumer tools, via the same
+  `r.jina.ai` → Exa fallback chain `briefing.py` uses.
+- **YouTube** is wired up but `channels` is empty by default — `yt-dlp` is slow
+  and no everyday-AI channels are worth polling daily yet. Add handles to
+  `radar_config.json` to switch it on.
