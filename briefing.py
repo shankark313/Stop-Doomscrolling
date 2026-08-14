@@ -738,11 +738,17 @@ def curate_with_claude(cfg, source_material, videos):
     client = Anthropic()  # reads ANTHROPIC_API_KEY from the environment
 
     depth = DURATION_MAP.get(cfg.get("duration", "1hr"), DURATION_MAP["1hr"])
-    max_tokens = {"30min": 4000, "1hr": 6000, "2hr": 8000}.get(
-        cfg.get("duration", "1hr"), 6000
-    )
     today = datetime.now().strftime("%A, %B %-d, %Y")
     topics = cfg.get("selected_topics") or []
+
+    # The duration sets the *depth per story*; the topic count sets how many
+    # stories there have to be. A fixed "8-10 stories" silently drops most of a
+    # 25-topic config, so give the model room to cover what was actually asked
+    # for: roughly one item per topic, plus headroom for the fixed sections.
+    base_tokens = {"30min": 4000, "1hr": 6000, "2hr": 8000}.get(
+        cfg.get("duration", "1hr"), 6000
+    )
+    max_tokens = max(base_tokens, min(24000, 3000 + 700 * len(topics)))
 
     required = []
     if videos:
@@ -751,6 +757,17 @@ def curate_with_claude(cfg, source_material, videos):
             'MUST include a "🎥 Worth watching" section that lists EVERY one of them '
             "(channel — title — clickable link). Do not omit any, even if you judge "
             "them lower-signal than other stories. This overrides curating ruthlessly."
+        )
+    if topics:
+        required.append(
+            f"The reader configured {len(topics)} topics (listed below). Every topic "
+            "that has usable material in the source below MUST produce at least one "
+            "item. Do not spend the whole briefing on the big model/funding stories "
+            "while the narrower operational topics go unmentioned — those are the "
+            "ones the reader added deliberately. Where several topics overlap, cover "
+            "them in one section rather than repeating the story. If a topic genuinely "
+            "has nothing worthwhile today, silently omit it — but do not omit a topic "
+            "merely because other stories seem bigger."
         )
     required.append(
         'Finish with a section titled exactly "💡 One Thing To Think About" — ONE '
@@ -762,7 +779,10 @@ def curate_with_claude(cfg, source_material, videos):
 
     user_content = f"""Today is {today}.
 
-Write today's AI briefing. Include {depth['items']} — aim for {depth['style']}.
+Write today's AI briefing. Lead with {depth['items']} covered at the depth of \
+{depth['style']}, then keep going in briefer one-line form until every topic below \
+that has material has been covered. Breadth across the reader's topics matters more \
+than length on any single story.
 
 The reader cares about these topics:
 {chr(10).join('- ' + t for t in topics) if topics else '- General AI news'}
