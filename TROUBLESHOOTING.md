@@ -153,6 +153,49 @@ JavaScript that `r.jina.ai` cannot execute. The Exa fallback scoped to
 
 ---
 
+## Known issues / backlog
+
+Open items, none blocking. Recorded so they aren't rediscovered from scratch.
+
+### Stray Markdown escapes in the delivered briefing
+
+Claude occasionally emits Markdown escapes into what is meant to be Telegram
+**HTML** — observed as `Amazon's \$1.8M Claude cost spiral` in the 2026-08-14
+briefing. In HTML mode `\$` has no meaning, so the backslash renders literally.
+Recurs wherever a dollar figure lands mid-sentence.
+
+*Fix:* strip stray backslash-escapes in `send_telegram()` before posting, rather
+than trying to prompt the behaviour away — the model is inconsistent about it and
+a post-processing pass is deterministic.
+
+### "Plain English, no jargon" is a style instruction, not a topic
+
+`Practical AI workflows in plain English, no jargon` sits in the configured topic
+list, where it is searched as if it were a subject. It returns the least material
+of any topic and logs `Serper returned no results` on every run.
+
+*Fix:* fold the intent into `SYSTEM_PROMPT` as a writing-style rule, then delete
+it from the topic list in the UI.
+
+### Duplicate topics
+
+`Latest AI news` and `latest AI News` are both configured — case variants that
+issue two identical Exa + Serper query pairs daily for identical results.
+`New AI Tools` also overlaps `AI tools & breakthroughs` heavily.
+
+*Fix:* delete the duplicates in the UI. Optionally case-fold in
+`normalize_config()`'s `_dedupe()` so the UI can't accept them again.
+
+### Serper quota is shared with another project
+
+`SERPER_API_KEY` is currently the same key another project uses, so both draw on
+one quota. Current spend is roughly one call per subreddit plus one per topic per
+run (~38/day at 13 subreddits and 25 topics).
+
+*Fix:* mint a separate key at <https://serper.dev> to split the billing.
+
+---
+
 ## Railway shared variables
 
 A variable added under Project Settings → Shared Variables does nothing until you
