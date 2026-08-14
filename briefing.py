@@ -68,26 +68,32 @@ def _ytdlp_base_opts():
     YouTube serves a "Sign in to confirm you're not a bot" interstitial to
     datacenter IPs, which is why channel checks succeed on a laptop and return
     nothing from Railway. Two env vars work around it:
-      YTDLP_COOKIES  — contents of a Netscape-format cookies.txt export of a
-                       logged-in YouTube session (written to a temp file here).
+      YTDLP_COOKIES_B64 — a base64-encoded cookies.txt export (preferred: the
+                       format is tab-separated, and pasting raw tabs into a
+                       dashboard textarea often silently converts them to spaces).
+      YTDLP_COOKIES  — the same file as plain text, for local use.
       YTDLP_PROXY    — an http(s)/socks proxy on a residential IP.
-    Neither is required; without them we simply use the default client.
+    None is required; without them we simply use the default client.
     """
     opts = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
         "ignoreerrors": True,
-        # The android/web_embedded clients are less aggressively bot-checked
-        # than the default web client.
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
     proxy = (os.getenv("YTDLP_PROXY") or "").strip()
     if proxy:
         opts["proxy"] = proxy
+
     cookie_file = _ytdlp_cookie_file()
     if cookie_file:
+        # The android client ignores cookies entirely, so once we have a jar the
+        # web client is the one that can actually authenticate with it.
         opts["cookiefile"] = cookie_file
+        opts["extractor_args"] = {"youtube": {"player_client": ["web"]}}
+    else:
+        # No cookies: fall back to the clients that are least bot-checked.
+        opts["extractor_args"] = {"youtube": {"player_client": ["android", "web"]}}
     return opts
 
 
@@ -95,22 +101,51 @@ _COOKIE_PATH = None
 
 
 def _ytdlp_cookie_file():
-    """Materialise YTDLP_COOKIES into a temp file once per process, if set."""
+    """Materialise the cookie env var into a temp file once per process, if set."""
     global _COOKIE_PATH
     if _COOKIE_PATH is not None:
         return _COOKIE_PATH or None
-    raw = os.getenv("YTDLP_COOKIES") or ""
+    _COOKIE_PATH = ""
+
+    raw = ""
+    encoded = (os.getenv("YTDLP_COOKIES_B64") or "").strip()
+    if encoded:
+        import base64
+        import binascii
+
+        try:
+            raw = base64.b64decode(encoded).decode("utf-8")
+        except (binascii.Error, ValueError, UnicodeDecodeError) as exc:
+            log(f"  YTDLP_COOKIES_B64 could not be decoded ({exc}); ignoring it.")
     if not raw.strip():
-        _COOKIE_PATH = ""
+        raw = (os.getenv("YTDLP_COOKIES") or "").replace("\\n", "\n")
+    if not raw.strip():
         return None
+
+    # A cookies.txt whose columns arrived space-separated (a textarea mangling
+    # the tabs) parses as an empty cookie jar and fails exactly like no file at
+    # all, so repair it rather than letting it fail silently.
+    lines = []
+    for line in raw.splitlines():
+        if line.strip() and not line.startswith("#") and "\t" not in line:
+            line = re.sub(r" {1,}", "\t", line.strip())
+        lines.append(line)
+    repaired = "\n".join(lines)
+    if not repaired.startswith("# Netscape HTTP Cookie File"):
+        repaired = "# Netscape HTTP Cookie File\n" + repaired
+
     import tempfile
 
     handle = tempfile.NamedTemporaryFile(
         "w", suffix=".txt", delete=False, encoding="utf-8"
     )
-    handle.write(raw.replace("\\n", "\n"))
+    handle.write(repaired + "\n")
     handle.close()
     _COOKIE_PATH = handle.name
+    count = sum(
+        1 for ln in repaired.splitlines() if ln.strip() and not ln.startswith("#")
+    )
+    log(f"  Using YouTube cookie file with {count} cookie(s).")
     return _COOKIE_PATH
 
 
