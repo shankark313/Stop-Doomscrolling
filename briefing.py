@@ -80,6 +80,10 @@ def _ytdlp_base_opts():
         "no_warnings": True,
         "skip_download": True,
         "ignoreerrors": True,
+        # We only ever read title/timestamp/description, so a video whose formats
+        # can't be resolved is still perfectly usable. Without this, an
+        # unavailable format aborts the whole extraction and the video is lost.
+        "ignore_no_formats_error": True,
     }
     proxy = (os.getenv("YTDLP_PROXY") or "").strip()
     if proxy:
