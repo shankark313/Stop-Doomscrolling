@@ -882,6 +882,30 @@ def _split_text(text, limit=3800):
     return parts or [text]
 
 
+def _telegram_post(url, payload, attempts=4):
+    """POST to Telegram, retrying on timeouts, connection errors and 5xx.
+
+    A briefing takes ~4 minutes to build; losing it to one 30-second read
+    timeout on api.telegram.org (which happens) is not acceptable, so retry
+    with backoff before giving up. Returns the last response, or None if every
+    attempt raised.
+    """
+    resp = None
+    for attempt in range(1, attempts + 1):
+        try:
+            resp = requests.post(url, json=payload, timeout=30)
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            resp = None
+            log(f"  Telegram request failed (attempt {attempt}/{attempts}): {exc}")
+        else:
+            if resp.status_code < 500 and resp.status_code != 429:
+                return resp
+            log(f"  Telegram returned {resp.status_code} (attempt {attempt}/{attempts}).")
+        if attempt < attempts:
+            time.sleep(5 * attempt)
+    return resp
+
+
 def send_telegram(text, token, chat_id):
     if not token or not chat_id:
         log("  Telegram token or chat id missing — cannot deliver.")
@@ -899,16 +923,18 @@ def send_telegram(text, token, chat_id):
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
-        resp = requests.post(url, json=payload, timeout=30)
-        if not resp.ok:
+        resp = _telegram_post(url, payload)
+        if resp is not None and not resp.ok:
             # HTML parse errors are common — retry the chunk as plain text.
             log(f"  Telegram HTML send failed ({resp.status_code}); retrying as plain text.")
-            resp = requests.post(
+            resp = _telegram_post(
                 url,
-                json={"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True},
-                timeout=30,
+                {"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True},
             )
-        if not resp.ok:
+        if resp is None:
+            ok = False
+            log("  Telegram send failed: no response after retries.")
+        elif not resp.ok:
             ok = False
             log(f"  Telegram send failed: {resp.status_code} {resp.text[:200]}")
     return ok
