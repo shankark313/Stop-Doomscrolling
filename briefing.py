@@ -801,12 +801,16 @@ sections.
 {source_material}
 === END SOURCE MATERIAL ==="""
 
-    resp = client.messages.create(
+    # Stream, don't create(): the SDK refuses a non-streaming request whose
+    # max_tokens could run past 10 minutes (~21.3k tokens), and 27 topics
+    # (3000 + 700 * 27 = 21.9k) is enough to cross it.
+    with client.messages.stream(
         model=MODEL,
         max_tokens=max_tokens,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_content}],
-    )
+    ) as stream:
+        resp = stream.get_final_message()
     return "".join(b.text for b in resp.content if b.type == "text").strip()
 
 
